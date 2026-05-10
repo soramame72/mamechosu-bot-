@@ -169,63 +169,11 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # GROQ ステータス更新 (1分ごと、100/1でえっち喘ぎ声)
 # ──────────────────────────────────────────────
 # えっちステータス（100分の1の確率で表示）
-LEWD_STATUS = [
-    "えっちなこと考え中…",
-    "ドキドキしてる…",
-    "ちょっとえっちな気分…",
-    "やばいこと想像中…",
-]
-
-async def _groq_status() -> str:
-    """GROQに短いWatchingステータス文を生成させる"""
-    fallback = random.choice(["みんなの会話", "サーバーを監視中", "元気に稼働中", "お手伝い中"])
-    if not GROQ_API_KEY:
-        return fallback
-    try:
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "model": "llama-3.1-8b-instant",
-                "messages": [{
-                    "role": "user",
-                    "content": (
-                        "Discord Botの「視聴中」ステータスに使う短い日本語テキストを"
-                        "1つだけ出力してください。"
-                        "必ず10文字以内。鍵括弧・改行・説明文は一切不要。"
-                        "例: みんなの会話 / サーバーを監視 / 元気に稼働中"
-                    )
-                }],
-                "max_tokens": 30,
-                "temperature": 1.0,
-            }
-            async with session.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}",
-                         "Content-Type": "application/json"},
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    txt  = data["choices"][0]["message"]["content"]
-                    txt = txt.split("\n")[0].strip()
-                    txt = re.sub(r"[\u300c\u300d\u300e\u300f()\uff08\uff09\"'\\\\]", "", txt).strip()
-                    # 不適切ワードをフィルタ
-                    if any(w in txt for w in ["えっち","エロ","下ネタ","NSFW","sex"]):
-                        return fallback
-                    return txt[:15] if txt else fallback
-                print(f"[GROQ] HTTP {resp.status}")
-    except Exception as e:
-        print(f"[GROQ] {e}")
-    return fallback
-
-@tasks.loop(minutes=1)
+# update_status は on_ready 内で直接設定するため loop 不要
+# (tasks.loop が残っているとインポートエラーになるので空関数で保持)
+@tasks.loop(hours=9999)
 async def update_status():
-    if random.randint(1, 100) == 1:
-        txt = random.choice(LEWD_STATUS)
-    else:
-        txt = await _groq_status()
-    await bot.change_presence(
-        activity=discord.CustomActivity(name=txt))
+    pass
 
 
 # ──────────────────────────────────────────────
@@ -242,8 +190,9 @@ async def on_ready():
         print(f"{len(synced)} コマンド同期完了")
     except Exception as e:
         print(f"コマンド同期失敗: {e}")
-    if not update_status.is_running():
-        update_status.start()
+    # ステータスを ver1.1 固定で設定
+    await bot.change_presence(
+        activity=discord.CustomActivity(name="ver1.1"))
 
 
 # ──────────────────────────────────────────────
@@ -273,11 +222,14 @@ HELP_TEXT = {
     "save":       "サーバーのロール・チャンネル・権限をバックアップします。\n共有コードで他サーバーでも使用可能。",
     "restore":    "バックアップからサーバーを復元します。\nオプション: code=他サーバーのコード",
     "lewd":       "えっち検出ON/OFF。\nscope: channel / server  state: ON / OFF",
-    "h":          "NSFWチャンネル限定: えっち画像をランダムで取得します。（GL多め・BLなし）",
+    "atsumori":   "熱盛検知ON/OFF。スポーツ等の熱い場面を検知してatsumori.pngを送信。\nscope: channel / server  state: ON / OFF",
+    "h":          "NSFWチャンネル限定: えっちな画像をランダムで取得します。",
     "globalchat": "グローバルチャット管理。\naction: join=参加 / leave=退出 / list=一覧",
     "permission": "Botの権限と状態を一覧表示します。",
     "quote":      "名言カード画像を生成します。\n例: /quote text:夢を諦めるな author:無名 theme:dark",
     "purge":      "直近N件のメッセージを削除します（最大100件）。\n例: /purge count:50",
+    "grok":       "grok_dc の GitHub リポジトリリンクを表示します。",
+    "supiki":     "ｽﾋﾟｷになります。",
 }
 
 @bot.tree.command(name="help", description="各コマンドの使い方を表示します")
@@ -491,7 +443,12 @@ class _ToggleButton(discord.ui.Button):
             gd[f"{self.feature}_channels"] = chs
         set_guild_data(self.guild_id, gd)
         scope_txt = "サーバー全体" if self.scope == "server" else "このチャンネル"
-        feat_txt  = "川柳検出" if self.feature == "haiku" else "えっち検出"
+        if self.feature == "haiku":
+            feat_txt = "川柳検出"
+        elif self.feature == "atsumori":
+            feat_txt = "熱盛検知"
+        else:
+            feat_txt = "えっち検出"
         await interaction.response.send_message(
             f"{scope_txt}の{feat_txt}を {'ON' if self.on else 'OFF'} にしました。", ephemeral=True)
 
@@ -618,14 +575,17 @@ class _BtnPurge(discord.ui.Button):
             await i.response.send_message("メッセージ管理権限が必要です。", ephemeral=True); return
         await i.response.send_modal(PurgeModal(self.ch))
 
-# ── CPView (4ページ構成) ──────────────────────
+# ── CPView (5ページ構成) ──────────────────────
 class CPView(discord.ui.View):
     PAGE_TITLES = [
         "メッセージ・ワード管理",
-        "機能ON/OFF (川柳・えっち検出)",
-        "サーバー情報・バックアップ",
-        "パネル作成・その他",
+        "川柳 ON/OFF",
+        "えっち検出 ON/OFF",
+        "熱盛検知 ON/OFF",
+        "サーバー情報・バックアップ / パネル作成",
     ]
+    MAX_PAGE = 4
+
     def __init__(self, guild_id: int, channel_id: int, page: int = 0):
         super().__init__(timeout=300)
         self.guild_id   = guild_id
@@ -634,7 +594,6 @@ class CPView(discord.ui.View):
         self._build_buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """全ボタン共通の権限チェック。manage_channels以上の権限がなければ弾く。"""
         if not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
                 "コントロールパネルはチャンネル管理権限が必要です。", ephemeral=True)
@@ -646,39 +605,71 @@ class CPView(discord.ui.View):
         gid = self.guild_id
         cid = self.channel_id
         p   = self.page
+
         if p == 0:
-            self.add_item(_BtnSetWelcome(gid)); self.add_item(_BtnSetGoodbye(gid))
-            self.add_item(_BtnAddWord(gid));    self.add_item(_BtnListWords(gid))
-            self.add_item(_BtnAddAutoreply(gid)); self.add_item(_BtnListAutoreply(gid))
+            # ページ1: メッセージ・ワード管理
+            self.add_item(_BtnSetWelcome(gid));     self.add_item(_BtnSetGoodbye(gid))
             self.add_item(_BtnPreviewWelcome(gid)); self.add_item(_BtnPreviewGoodbye(gid))
+            self.add_item(_BtnAddWord(gid));        self.add_item(_BtnListWords(gid))
+            self.add_item(_BtnAddAutoreply(gid));   self.add_item(_BtnListAutoreply(gid))
+
         elif p == 1:
+            # ページ2: 川柳 ON/OFF (このch / 全体)
             specs = [
-                ("川柳 ON (このch)", "haiku","channel",True, discord.ButtonStyle.success,0),
-                ("川柳 OFF(このch)", "haiku","channel",False,discord.ButtonStyle.danger, 0),
-                ("川柳 ON (全体)",   "haiku","server", True, discord.ButtonStyle.success,1),
-                ("川柳 OFF(全体)",   "haiku","server", False,discord.ButtonStyle.danger, 1),
-                ("えっち ON(このch)","lewd", "channel",True, discord.ButtonStyle.success,2),
-                ("えっちOFF(このch)","lewd", "channel",False,discord.ButtonStyle.danger, 2),
-                ("えっち ON(全体)",  "lewd", "server", True, discord.ButtonStyle.success,3),
-                ("えっちOFF(全体)",  "lewd", "server", False,discord.ButtonStyle.danger, 3),
+                ("川柳 ON  (このch)", "haiku", "channel", True,  discord.ButtonStyle.success, 0),
+                ("川柳 OFF (このch)", "haiku", "channel", False, discord.ButtonStyle.danger,  0),
+                ("川柳 ON  (全体)",   "haiku", "server",  True,  discord.ButtonStyle.success, 1),
+                ("川柳 OFF (全体)",   "haiku", "server",  False, discord.ButtonStyle.danger,  1),
             ]
-            for label,feat,scope,on,style,row in specs:
-                self.add_item(_ToggleButton(label=label,style=style,row=row,guild_id=gid,feature=feat,scope=scope,on=on))
+            for label, feat, scope, on, style, row in specs:
+                self.add_item(_ToggleButton(label=label, style=style, row=row,
+                                            guild_id=gid, feature=feat, scope=scope, on=on))
+
         elif p == 2:
-            self.add_item(_BtnResource()); self.add_item(_BtnPermission())
-            self.add_item(_BtnBackup(gid)); self.add_item(_BtnSettings(gid))
+            # ページ3: えっち検出 ON/OFF (このch / 全体)
+            specs = [
+                ("えっち ON  (このch)", "lewd", "channel", True,  discord.ButtonStyle.success, 0),
+                ("えっち OFF (このch)", "lewd", "channel", False, discord.ButtonStyle.danger,  0),
+                ("えっち ON  (全体)",   "lewd", "server",  True,  discord.ButtonStyle.success, 1),
+                ("えっち OFF (全体)",   "lewd", "server",  False, discord.ButtonStyle.danger,  1),
+            ]
+            for label, feat, scope, on, style, row in specs:
+                self.add_item(_ToggleButton(label=label, style=style, row=row,
+                                            guild_id=gid, feature=feat, scope=scope, on=on))
+
         elif p == 3:
+            # ページ4: 熱盛検知 ON/OFF (このch / 全体)
+            specs = [
+                ("熱盛 ON  (このch)", "atsumori", "channel", True,  discord.ButtonStyle.success, 0),
+                ("熱盛 OFF (このch)", "atsumori", "channel", False, discord.ButtonStyle.danger,  0),
+                ("熱盛 ON  (全体)",   "atsumori", "server",  True,  discord.ButtonStyle.success, 1),
+                ("熱盛 OFF (全体)",   "atsumori", "server",  False, discord.ButtonStyle.danger,  1),
+            ]
+            for label, feat, scope, on, style, row in specs:
+                self.add_item(_ToggleButton(label=label, style=style, row=row,
+                                            guild_id=gid, feature=feat, scope=scope, on=on))
+
+        elif p == 4:
+            # ページ5: サーバー情報・バックアップ / パネル作成
+            self.add_item(_BtnResource());         self.add_item(_BtnPermission())
+            self.add_item(_BtnBackup(gid));        self.add_item(_BtnSettings(gid))
             ch = bot.get_channel(cid)
-            self.add_item(_BtnCreateVerify(gid, cid)); self.add_item(_BtnCreateRolePanel(gid, cid))
+            self.add_item(_BtnCreateVerify(gid, cid))
+            self.add_item(_BtnCreateRolePanel(gid, cid))
             self.add_item(_BtnGlobalChat(gid, cid))
-            if ch: self.add_item(_BtnPurge(ch))
-        # ナビボタン
-        if p > 0: self.add_item(_CPNavButton("← 前へ", -1, self))
-        if p < 3: self.add_item(_CPNavButton("次へ →", +1, self))
+            if ch:
+                self.add_item(_BtnPurge(ch))
+
+        # ナビボタン (row=4)
+        if p > 0:
+            self.add_item(_CPNavButton("← 前へ", -1, self))
+        if p < self.MAX_PAGE:
+            self.add_item(_CPNavButton("次へ →", +1, self))
 
     def _make_embed(self):
         return discord.Embed(
-            title=f"コントロールパネル [{self.page+1}/4] {self.PAGE_TITLES[self.page]}",
+            title=(f"コントロールパネル [{self.page+1}/{self.MAX_PAGE+1}]"
+                   f"  {self.PAGE_TITLES[self.page]}"),
             description="ボタンで各機能を操作できます。",
             color=0xFEE75C)
 
@@ -921,7 +912,10 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
     await bot.process_commands(message)
+    # DM受信時 → えっち語録をランダム返信
     if not message.guild:
+        if message.content.strip():
+            await message.channel.send(random.choice(LEWD_REPLIES))
         return
     gd = get_guild_data(message.guild.id)
 
@@ -961,6 +955,10 @@ async def on_message(message: discord.Message):
     # 川柳検出
     if gd.get("haiku_server") or message.channel.id in gd.get("haiku_channels", []):
         await check_haiku(message)
+
+    # 熱盛検知
+    if gd.get("atsumori_server") or message.channel.id in gd.get("atsumori_channels", []):
+        await check_atsumori(message)
 
     # えっち検出
     if gd.get("lewd_server") or message.channel.id in gd.get("lewd_channels", []):
@@ -1134,6 +1132,34 @@ KANJI_YOMI: dict[str, str] = {
     "波":"なみ","岩":"いわ","石":"いし","霧":"きり","雪":"ゆき","虹":"にじ",
     "香":"かお","命":"いのち","神":"かみ","静":"しず","深":"ふか","遠":"とお",
     "大":"おお","小":"ちい","長":"なが","新":"あたら","古":"ふる",
+    # 動詞・形容詞系
+    "見":"み","聞":"き","言":"い","思":"おも","知":"し","来":"く","行":"い",
+    "出":"で","入":"はい","立":"た","起":"お","寝":"ね","食":"た","飲":"の",
+    "書":"か","読":"よ","歩":"あゆ","走":"はし","泳":"およ","飛":"と",
+    "降":"ふ","照":"て","吹":"ふ","流":"なが","咲":"さ","散":"ち","落":"お",
+    "揺":"ゆ","輝":"かがや","静":"しず","深":"ふか","遠":"とお","近":"ちか",
+    "高":"たか","低":"ひく","速":"はや","遅":"おそ","明":"あか","暗":"くら",
+    "熱":"あつ","冷":"つめ","甘":"あま","苦":"にが","辛":"から","酸":"す",
+    # 場所・自然
+    "丘":"おか","谷":"たに","峰":"みね","崖":"がけ","浜":"はま","沖":"おき",
+    "湖":"みずうみ","滝":"たき","泉":"いずみ","砂":"すな","土":"つち",
+    "石":"いし","岩":"いわ","霧":"きり","霜":"しも","露":"つゆ","虹":"にじ",
+    "雷":"かみなり","嵐":"あらし","霞":"かすみ","煙":"けむり","炎":"ほのお",
+    # 季語・風物詩
+    "花":"はな","桜":"さくら","梅":"うめ","菊":"きく","蓮":"はす",
+    "竹":"たけ","松":"まつ","杉":"すぎ","橡":"とち","柳":"やなぎ",
+    "蝶":"ちょう","蛍":"ほたる","蝉":"せみ","鈴虫":"すずむし",
+    "鴨":"かも","雀":"すずめ","鶯":"うぐいす","燕":"つばめ","鷹":"たか",
+    "蛙":"かえる","蛇":"へび","亀":"かめ","魚":"さかな","蟹":"かに",
+    # 人・心・時間
+    "命":"いのち","魂":"たましい","心":"こころ","夢":"ゆめ","愛":"あい",
+    "恋":"こい","涙":"なみだ","笑":"わら","泣":"な","祈":"いの",
+    "願":"ねが","誓":"ちか","忘":"わす","想":"おも","恋":"こい",
+    "旅":"たび","別":"わか","逢":"あ","待":"ま","惜":"お",
+    "昨":"きのう","今":"いま","明":"あす","朝":"あさ","昼":"ひる",
+    "夕":"ゆう","夜":"よる","宵":"よい","暁":"あかつき","晩":"ばん",
+    "春":"はる","夏":"なつ","秋":"あき","冬":"ふゆ","年":"とし",
+    "月":"つき","日":"ひ","時":"とき","刻":"とき","瞬":"またた",
 }
 
 def kanji_to_yomi(text: str) -> str:
@@ -1160,48 +1186,44 @@ def count_mora(text: str) -> int:
 
 def split_into_phrases(text: str) -> list[str] | None:
     """
-    5-7-5 を検出する。
-    優先順位:
-      1. 区切り文字(句読点/スペース)で3分割できて5-7-5になるもの
-      2. 区切り文字なしで全探索して5-7-5になる最初の分割
-    最低文字数チェック: 合計モーラが17でないものは除外
+    川柳の3フレーズを検出する。
+    字余り・字足らずも許容する。
+    - 区切り文字があれば3分割を試みる
+    - なければ5-7-5±1モーラの範囲で全探索
     """
-    # クリーニング: 全角スペース・URLは除外
     stripped = text.strip()
     if stripped.startswith("http"):
         return None
-    # 長すぎる・短すぎるメッセージはスキップ
-    if len(stripped) > 50 or len(stripped) < 7:
+    if len(stripped) > 60 or len(stripped) < 5:
         return None
 
-    # 1) 区切り文字で分割を試みる
-    for sep_pattern in [
-        r"[\s　、。,.・/\n！!？?]+",  # 句読点・記号系
-    ]:
-        parts = re.split(sep_pattern, stripped)
-        parts = [p for p in parts if p]
-        if len(parts) == 3:
-            moras = [count_mora(p) for p in parts]
-            if moras == [5, 7, 5]:
-                return parts
+    # 1) 区切り文字で3分割できる場合
+    parts = re.split(r"[\s　、。,.・/\n！!？?～~]+", stripped)
+    parts = [p for p in parts if p]
+    if len(parts) == 3:
+        # 各フレーズが2〜9モーラなら川柳として扱う（字余り・字足らず許容）
+        moras = [count_mora(p) for p in parts]
+        if all(2 <= m <= 9 for m in moras):
+            return parts
 
-    # 2) 区切りなしで全探索（5-7-5の合計=17文字前後のみ対象）
-    clean = re.sub(r"[\s　、。,.・/\n！!？?]", "", stripped)
+    # 2) 区切りなし: 4〜6 / 5〜9 / 4〜6 の範囲で全探索（緩い制約）
+    clean = re.sub(r"[\s　、。,.・/\n！!？?～~]", "", stripped)
     n     = len(clean)
-    # 全モーラが17でないなら即スキップ
-    if count_mora(clean) != 17:
+    total = count_mora(clean)
+    # 合計モーラが11〜21の範囲にあるものだけ対象
+    if not (11 <= total <= 21):
         return None
     for i in range(2, n-2):
         m1 = count_mora(clean[:i])
-        if m1 != 5:
+        if not (4 <= m1 <= 6):
             continue
         for j in range(i+2, n):
             m2 = count_mora(clean[i:j])
-            if m2 > 7:
+            if m2 > 9:
                 break
-            if m2 == 7:
+            if 5 <= m2 <= 9:
                 m3 = count_mora(clean[j:])
-                if m3 == 5:
+                if 4 <= m3 <= 6:
                     return [clean[:i], clean[i:j], clean[j:]]
     return None
 
@@ -1266,34 +1288,37 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
     # ベクタフォントが返るが日本語は表示できないことが多い
     return ImageFont.load_default(size=size)
 
-def build_haiku_image(parts: list[str], author: str = "") -> Image.Image:
+def build_haiku_image(parts: list[str]) -> Image.Image:
     """
-    縦書き・和紙風俳句カード。ふりがななし。
-    キャンバス高さを最長句の文字数から動的計算。
+    縦書き・和紙風俳句カード。W=380 H=560 固定。
+    最長句の文字数でフォントサイズ・char_hを動的計算し枠内に必ず収める。
     """
     import random as _rnd
 
-    CHAR_H  = 52   # 1文字の縦間隔
-    TOP_Y   = 48   # 本文開始Y
-    PAD_X   = 48   # 左右パディング
-    COL_GAP = 130  # 列間隔
-
-    max_len   = max(len(p) for p in parts)
-    W = 380
-    H = max(TOP_Y + max_len * CHAR_H + 52, 340)
-
-    col_xs = [W - PAD_X, W - PAD_X - COL_GAP, W - PAD_X - COL_GAP * 2]
+    W       = 380
+    H       = 560
+    PAD_X   = 48
+    COL_GAP = 130
+    TOP_Y   = 50
+    BOT_PAD = 30
 
     BG_TOP    = (253, 250, 238)
     BG_BOT    = (245, 240, 215)
     INK       = (45, 30, 15)
     FRAME_OUT = (180, 148, 92)
     FRAME_IN  = (212, 186, 132)
-    AUTHOR_C  = (120, 90, 52)
+
+    # 最長句の文字数からchar_h・font_sizeを動的決定
+    max_len   = max(len(p) for p in parts) if parts else 7
+    avail_h   = H - TOP_Y - BOT_PAD        # 描画可能な縦幅 = 480
+    char_h    = avail_h // max(max_len, 1)
+    font_size = min(42, max(18, int(char_h * 0.80)))
+    char_h    = max(char_h, font_size + 4)  # 文字間が詰まりすぎないように
 
     img  = Image.new("RGB", (W, H), BG_TOP)
     draw = ImageDraw.Draw(img)
 
+    # グラデ背景
     for yi in range(H):
         t = yi / H
         draw.line([(0, yi), (W, yi)], fill=(
@@ -1302,49 +1327,137 @@ def build_haiku_image(parts: list[str], author: str = "") -> Image.Image:
             int(BG_TOP[2] + (BG_BOT[2]-BG_TOP[2]) * t),
         ))
 
+    # 和紙ノイズ
     for _ in range(2000):
         xi = _rnd.randint(0, W-1); yi = _rnd.randint(0, H-1)
         v  = _rnd.randint(218, 250)
         draw.point((xi, yi), fill=(v, v-5, v-14))
 
-    draw.rectangle([6, 6, W-7, H-7],    outline=FRAME_OUT, width=3)
+    # 枠
+    draw.rectangle([6, 6, W-7, H-7],     outline=FRAME_OUT, width=3)
     draw.rectangle([13, 13, W-14, H-14], outline=FRAME_IN,  width=1)
     for cx, cy in [(6,6),(W-7,6),(6,H-7),(W-7,H-7)]:
         d = 7
         draw.polygon([(cx,cy-d),(cx+d,cy),(cx,cy+d),(cx-d,cy)], fill=FRAME_OUT)
 
-    f_main = _load_font(42)
-    f_auth = _load_font(12)
+    f_main = _load_font(font_size)
 
-    # 縦書き3列（右→中→左）、ふりがななし
+    # 3列のX座標（右→中→左）
+    col_xs = [W - PAD_X, W - PAD_X - COL_GAP, W - PAD_X - COL_GAP * 2]
+
+    # 縦書き3列
     for col_idx, phrase in enumerate(parts):
         cx = col_xs[col_idx]
         y  = TOP_Y
         for ch_char in phrase:
+            if y + font_size > H - BOT_PAD:  # 枠内に収まらなければ停止
+                break
             draw.text((cx, y), ch_char, font=f_main, fill=INK, anchor="mt")
-            y += CHAR_H
-
-    # 作者名: 右端列末尾の下に横書き右寄せ
-    text_end_y = TOP_Y + max_len * CHAR_H
-    if author:
-        disp   = author[:24]
-        auth_y = min(text_end_y + 12, H - 14)
-        draw.line([(col_xs[0]-60, auth_y-3), (col_xs[0]+8, auth_y-3)], fill=FRAME_IN, width=1)
-        draw.text((col_xs[0]+8, auth_y), disp, font=f_auth, fill=AUTHOR_C, anchor="rt")
+            y += char_h
 
     return img
 
+async def _groq_extract_haiku(text: str) -> list[str] | None:
+    """
+    GROQを使って文章中の川柳を検出する。
+    5-7-5に限定せず、字余り・字足らずも許容する。
+    """
+    if not GROQ_API_KEY:
+        return None
+    try:
+        prompt = (
+            "あなたは川柳・俳句の専門家です。\n"
+            "次の【元の文章】を見て、川柳・俳句として3フレーズに区切れるか判断してください。\n"
+            f"【元の文章】: 「{text}」\n\n"
+            "【絶対ルール】\n"
+            "- 出力する句1・句2・句3は【元の文章】に含まれる文字だけを使うこと\n"
+            "- 元の文章にない言葉を追加・変更・創作することは禁止\n"
+            "- 元の文章をそのまま3分割するだけでよい\n\n"
+            "【判断基準】\n"
+            "- 上の句(5モーラ前後) / 中の句(7モーラ前後) / 下の句(5モーラ前後)に自然に区切れるか\n"
+            "- 字余り・字足らずは許容する（±2モーラまでOK）\n"
+            "- 日常会話の一文でも川柳のリズムがあればOK\n"
+            "- 区切りは言葉の意味・リズム・息継ぎで自然に決める\n\n"
+            "川柳として区切れる場合、以下の形式だけで答えてください（説明不要）:\n"
+            "句1|句2|句3\n\n"
+            "例（5-7-5）: 元「古池や蛙飛び込む水の音」→ 古池や|蛙飛び込む|水の音\n"
+            "例（字余り）: 元「財布忘れたよ電車の中で気づいた」→ 財布忘れたよ|電車の中で|気づいた\n\n"
+            "川柳のリズムが感じられない文章は「なし」とだけ答えてください。"
+        )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 60,
+                    "temperature": 0.1,
+                },
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data   = await resp.json()
+                result = data["choices"][0]["message"]["content"].strip()
+                # "なし" または | がなければ非川柳
+                if "なし" in result or "|" not in result:
+                    return None
+                # 最初の | 区切り行だけを使う（複数行あっても1件のみ）
+                clean_text = re.sub(r"[\s\u3000\u3001\u3002,.!/?〜~]", "", text)
+                for line in result.splitlines():
+                    if "|" not in line:
+                        continue
+                    parts = [p.strip() for p in line.split("|")]
+                    # 3フレーズ・各フレーズ非空・2〜10モーラ
+                    if len(parts) != 3 or not all(p for p in parts):
+                        break
+                    if not all(2 <= count_mora(p) <= 10 for p in parts):
+                        break
+                    # 重要: 3フレーズを結合した文字列が元テキストに含まれるか検証
+                    joined = re.sub(r"[\s\u3000\u3001\u3002,.!/?〜~]", "", "".join(parts))
+                    if joined not in clean_text and clean_text not in joined:
+                        break   # 創作が含まれているのでNG
+                    return parts
+                return None
+    except Exception:
+        pass
+    return None
+
+# 川柳重複検知防止: 処理中のメッセージIDを記録
+_haiku_processing: set[int] = set()
+
 async def check_haiku(message: discord.Message):
     text = message.content.strip()
-    if not text:
+    if not text or len(text) < 5 or text.startswith("http"):
         return
-    parts = split_into_phrases(text)
-    if parts:
-        img = build_haiku_image(parts, message.author.display_name)
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        await message.channel.send("川柳を検出しました！", file=discord.File(buf, "senryu.png"), reference=message)
+    if text.startswith("/"):
+        return
+    # 同一メッセージに二重処理しない
+    if message.id in _haiku_processing:
+        return
+    _haiku_processing.add(message.id)
+    try:
+        parts = None
+        # GROQを優先（字余り・字足らず・文章中の検出が得意）
+        if GROQ_API_KEY and 5 <= len(text) <= 120:
+            parts = await _groq_extract_haiku(text)
+        # フォールバック: ローカル検出
+        if parts is None:
+            parts = split_into_phrases(text)
+        if parts:
+            img = build_haiku_image(parts)
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            await message.channel.send(
+                "川柳を検出しました！",
+                file=discord.File(buf, "senryu.png"),
+                reference=message,
+            )
+    finally:
+        _haiku_processing.discard(message.id)
 
 @bot.tree.command(name="haiku", description="川柳検出機能のON/OFFを切り替えます")
 @app_commands.describe(scope="channel=このチャンネルのみ / server=サーバー全体", state="ON / OFF", channel="対象チャンネル（省略=実行チャンネル）")
@@ -1471,6 +1584,12 @@ async def _perform_save(interaction: discord.Interaction, guild: discord.Guild):
     code = gen_code(8)
     backup["code"] = code
     gd = get_guild_data(guild.id)
+    # 上書き前に古いコードを _codes から削除
+    old_backup = gd.get("backup")
+    if old_backup and old_backup.get("code"):
+        data = load_data()
+        data.get("_codes", {}).pop(old_backup["code"], None)
+        save_data(data)
     gd["backup"] = backup
     set_guild_data(guild.id, gd)
     data = load_data()
@@ -1663,36 +1782,140 @@ LEWD_KEYWORDS = [
 ]
 
 LEWD_REPLIES = [
-    "あっ…やだ…もっとやさしくして…",
-    "んっ…そこ…なんか…へんな感じがする…",
-    "はぁ…はぁ…なんで…こんなきもちいいの…",
-    "やめ…て…でも…やめないでほしい…",
-    "そこ…だめっ…声…でちゃう…きかないで…",
-    "もうだめっ…なんか…でちゃいそう…",
-    "ふぁ…やばっ…あたまが…真っ白になってきた…",
-    "んんっ…もっと…もっとして…おねがい…",
-    "きもちぃ…ずっと…このまま…でいたい…",
-    "あっあっ…やばいって…ほんとに…やばい…",
-    "くぅ…なんか…じんじんする…とまらない…",
-    "ひゃっ…びっくりした…でも…きもちよかった…",
-    "んあっ…そこ…きもちよすぎて…こわい…",
-    "あぁ…もうだめかも…いっちゃうかも…",
-    "だめ…きもちよすぎて…ちゃんと考えられない…",
-    "やだっ…でも…きもちい…どうしよ…",
-    "んぁっ…なんか…ぼーっとしてきた…",
-    "はぁ…やばい…ほんとに…やばい…すき…",
-    "そんな…ところ…しらなかった…こんな感じなんだ…",
-    "んっ…すき…こういうの…ずっとしてほしい…",
-    "ふぅ…どうしよう…きもちよすぎて…なきそう…",
-    "あっ、そこ…ずっとしてて…おねがい…やめないで…",
-    "んもぅ…もう…しらない…全部きもちいい…",
-    "やっ…なんか…きもちいいのに…恥ずかしい…",
-    "んっ…はぁ…なんで…こんなに…きもちいいの…",
-    "あっ…もっと…もっとしてほしい…おねがい…",
-    "ふぁ…んっ…やば…きもちよすぎてきえそう…",
-    "はぁ…はぁ…全部…きもちよくて…わかんない…",
-    "んっ…やだ…でも…きもちいいからいい…",
-    "あっ…いっちゃう…ほんとにいっちゃう…",
+    "あっ…そこ…ふかく…いれないで…おなかがへん…になっちゃう…",
+    "んぁっ…おまんこ…きもちよく…されたら…もうだめ…らめぇぇ…",
+    "はぁ…はぁ…なかで…どくどく…してる…わかる…？…きもちぃ…",
+    "や…やだっ…こんな…おくまで…とどいたら…いっちゃうぅ…",
+    "くちゅくちゅ…っていってる…はずかしいから…きかないでぇ…",
+    "んっ…もうぬれぬれ…なの…はやくいれてほしくて…たまんない…",
+    "あっあっ…おねがい…もっとはやく…ぐりぐりして…おねがい…",
+    "ふぁ…クリトリス…そんな…ちゅーしたら…こわれちゃうぅ…",
+    "ん…ちくびがびんびん…になってるの…みないでぇ…きもちぃから…",
+    "あぁ…おなか…ぽこぽこしてる…あなたのが…こんなに…おおきくて…",
+    "だめ…やだ…でも…いかせてぇ…もう…がまんできない…いかせてぇぇ…",
+    "んぁっ…ゆびで…なかを…かきまわしたら…だびょーって…でちゃうぅ…",
+    "もうぐちょぐちょ…なの…きいてる？…ここ…ずっとうごかしてて…",
+    "あっ…いっちゃう…ほんとに…いっちゃうから…とめないでぇぇ…",
+    "はぁ…やばい…しりを…たたかれるの…なんで…こんなにきもちぃの…",
+    "んっ…おっぱい…もみながら…したいの？…変態…でもきもちぃ…",
+    "ふぁぁ…ぜんぶ…のみこんじゃった…おなかいっぱいぃ…よかった…",
+    "やだっ…いきなり…うしろも…さわらないで…ぁでも…きもちよかった…",
+    "あっ…ぜんぶ…きもちぃ…くりも…なかも…しりも…ぜんぶぅ…",
+    "んんっ…せーえき…いっぱいでてる…あったかくて…きもちぃ…",
+    "あぁ…おまんこが…ひくひくしてる…のわかる？…まだいけそう…",
+    "ふぁ…あんな…おっきいの…いれたのに…もっとほしいなんて…わたしへん？…",
+    "んもぅ…ぜんぶしらない…きもちよすぎて…あたまがとける…らめ…",
+    "あっあっあっ…いく…いく…ほんとにいくぅぅ…とめないでぇぇ…",
+    "はぁ…はぁ…なかで…びゅーって…されたら…また…いっちゃった…",
+    "やっ…れろれろ…しながら…ゆびまで…いれないでぇ…きもちよすぎぃ…",
+    "んっ…ふとももに…こすりつけてるの…わかってるから…ちゃんといれてぇ…",
+    "ぁああ…しぼりとられてる…きもちぃ…もっとほしい…もっとぉ…",
+    "やだ…くちで…してほしいの…おまんこ…なめてほしいの…おねがい…",
+    "んあっ…いっしょに…いこ？…なかに…だしていいから…いっしょにぃ…",
+    # ── 追加語録 ──────────────────────────────────────
+    "ふぁっ…きもちぃよぉ…こんなの…しらなかった…まじで…やばいってぇ…",
+    "あっ…おまんこ…ひろがってる…かんじする…もっとおしこんでぇ…",
+    "んっ…クリいじりながら…おくまでついたら…らめぇぇぇ…こわれる…",
+    "はぁっ…ぬれすぎて…じゅぽじゅぽおとしてる…はずかしいぃ…でもきもちぃ…",
+    "あぁ…せなかからだかれながら…うごかれたら…なきそう…きもちぃ…",
+    "んぁ…ちくびをこりこりしながら…したでなめられたら…いきかけた…",
+    "やぁっ…うしろにいれながら…クリもさわったら…もうだめぇぇ…",
+    "ふっ…ふっ…おなかのなかみちみちで…くるしい…でもきもちよすぎてぇ…",
+    "んんっ…はげしくうごかないで…おねがい…すぐいっちゃうから…でもきもちぃ…",
+    "あっ…あったかいなかに…いっぱいだしてくれたら…うれしいぃ…",
+    "ふぁ…クリをくちでチュッチュしながら…ゆびをいれないでぇ…いきすぎるぅ…",
+    "んっ…のみこめてるかな…ちゃんとぜんぶのみこみたい…おいしいぃ…",
+    "あぁん…ぎゅってされながらうごかれると…こころもとけちゃいそう…",
+    "はぁっ…おまんこがほしくておねだりしてるの…わかる？…いれてぇ…",
+    "んあっ…ゆっくりゆっくりやったらズルいよぉ…もっとはやくしてぇ…",
+    "ふぁっ…しおがでちゃう…でちゃう…とめられない…やばい…いっちゃうぅ…",
+    "あっ…えっちなかおしてるっていわないでぇ…じぶんでわかってるからぁ…",
+    "んっ…うごくたびにくちゅくちゅおとがして…はずかしすぎてりかんする…",
+    "やっ…そんなにみつめながらしないでぇ…はずかしくていっちゃうぅ…",
+    "ふぁ…とろとろになってきた…もうじぶんがわかんない…",
+    "んぁあ…おしりのあなもさわらないでぇ…そこまだだいじょうぶじゃないから…",
+    "あっあっ…はやすぎてついていけない…でもきもちぃからやめないで…",
+    "はぁ…せんせい…もっとおしえて…えっちなきもちよさを…もっとぉ…",
+    "んっ…なかがぎゅってしてるわかる？…はなしたくなくてぎゅってしてる…",
+    "ふぁぁ…なんかいでもいかせてほしいぃ…",
+    "あっ…おっぱいたぷたぷゆれてるのみてるんでしょ…変態…",
+    "んんっ…ふかいとことんとんされたら…なきながらいっちゃう…",
+    "ふぁ…おまんこのなかぜんぶみせてあげる…もっとみてぇ…",
+    "あぁっ…くちでしごかれながらみあげたらめがあって…いきそう…",
+    "んあっ…こんなおとでちゃってる…なかがびしょびしょだから…",
+    "はあっ…3かいめなのにまだきもちぃ…おかしくなってきた…",
+    "ふぁっ…うごくたびになかをかきまわされて…いまここいちばんきもちぃ…",
+    "んっ…おしっこもれそうじゃなくて…しおがでちゃいそうなの…",
+    "あっ…えっちなおとさせながらなかにいれてほしい…",
+    "んぁ…うしろからだきしめながらここをくりくりしたら…ずるいよぉ…",
+    "ふぁっ…んんっ…いきそういきそういきそう…とめないでぇぇ…",
+    "あっ…おへそのしたがじーんってしてる…もうすぐいけそう…",
+    "はぁ…いいこいいこってあたまなでながらしたら…だいすきになっちゃう…",
+    "んっ…ふかすぎておなかまでとどいてるきがする…こわれちゃう…でもきもちぃ…",
+    "あっあっ…んんっ…いくいくいくぅぅぅ…あぁぁぁぁぁっ…",
+    "やぁっ…せなかにしながらちくびをつねったら…ほんとにやばい…",
+    "んっ…きもちよくてなみだでてきた…なんでこんなにきもちぃの…",
+    "ふぁぁ…なかにいっぱいだして…ぽたぽたたれてる…えっちだねわたし…",
+    "あっ…またかたくなってる…まだするの？…うれしいぃ…",
+    "はぁっ…もうじゅんびできてるから…はやくいれてぇ…おねだりしてる…",
+    "んっ…きもちよすぎてことばがでない…ただただあっあっあっ…",
+    "ふぁ…おまんこだけじゃなくてくちもおしりも…ぜんぶつかっていいよ…",
+    "あぁ…もうぐちゃぐちゃなのにやめてくれない…もっとめちゃくちゃにして…",
+    "んっ…きょうなんかいいかせてくれるの…もうかぞえるきりょくもない…",
+    "ふぁ…かれしでもないのに…こんなにいかされたら…すきになっちゃうよ…",
+    "あぁっ…みてて…わたしここがいちばんきもちぃから…ずっとここして…",
+    "んんんっ…さいごにいっぱいなかにだして…おわりにして…おねがい…",
+    # ── さらに追加語録 ──────────────────────────────────
+    "あっ…ここ…きもちよすぎて…あしがたたない…もうたおれそう…",
+    "んぁ…ずっとここで…うごかしてて…きもちよくてめがきえる…",
+    "ふぁっ…さすったら…すぐぬれちゃった…じぶんでもびっくり…",
+    "はぁ…おなかのそこが…きゅんきゅんしてる…はやくちょうだい…",
+    "んっ…ぬれてるとこ…みないでぇ…でもみてほしいきもちもある…",
+    "あぁ…ここに…すぽっていれたら…ぴったりはまる…きもちぃ…",
+    "やっ…ずっといったりきたり…されたら…なんかでてきた…やばい…",
+    "んんっ…にほんごわすれた…きもちよすぎて…あっあっしかいえない…",
+    "ふぁっ…したから…くりくりされながら…ふかくつかれたら…らめらめ…",
+    "あっ…そこ…とくべつにきもちよいとこ…よくわかったね…すごい…",
+    "はぁっ…おしりをもちあげさせて…さらにおくまでいれないでぇ…こわれる…",
+    "んぁっ…くちゅくちゅ…じゅぽじゅぽ…えっちなおとしかしてない…",
+    "ふぁ…うごくたびに…ちくびがゆれて…じぶんでもきもちよくなってる…",
+    "あぁっ…さわられるまえから…もうびちょびちょだった…ごめんなさい…",
+    "んっ…かおにかかったぁ…はずかしい…でもきもちよかったよ…",
+    "やぁ…なかでおっきくなるの…わかる…すごくきもちぃ…",
+    "ふぁっ…じぶんのこえが…えっちすぎて…こわくなってきた…でもとまれない…",
+    "あっ…きもちよくて…あしがぷるぷるしてる…もうたてない…",
+    "んぁ…ゆびいれたまま…くりくりしたら…いちびょうでいった…",
+    "はぁ…おまんこが…すっごいひくひくしてる…まだほしいってしてる…",
+    "ふぁぁっ…はだかでだかれながら…キスしてほしい…すきなひとに…",
+    "んんっ…いったのに…まだうごかしてるの…きもちよすぎておかしくなる…",
+    "あっ…ちんちんのかたち…なかでかんじる…ここまでとどいてる…",
+    "やぁ…だいすきなひとにいかされたら…ないてしまった…きもちぃ…",
+    "ふぁ…ここをなめながら…ゆびをいれると…ちがうとこがいきそう…",
+    "んぁっ…かれし…いやキミ…ちょっとまって…いきそうだから…ちょっとまって…",
+    "はぁっ…うえにのりながら…うんどうするの…はずかしいけどきもちぃ…",
+    "あっ…こんなにぬれてるのに…まだいじわる…いれてくれないの…",
+    "んっ…ふとももをつかんで…はげしくされると…なかがきゅってする…",
+    "ふぁぁ…3かいいかせてくれたら…なんでもします…だからもっとして…",
+    "やぁっ…うしろからあたまをおさえて…されると…ほんとにやばい…",
+    "あぁ…ひとさしゆびと…なかゆびで…いっぺんにいれないでぇ…ひろがっちゃう…",
+    "んんっ…せなかをなでながら…されると…なんかかなしくなってなける…きもちぃから…",
+    "ふぁっ…いちどにいっぱいきもちよくなると…あたまがまっしろになる…",
+    "あっ…くちと…なかと…ゆびで…さんかしょいっぺんにされたら…もう…あぁ…",
+    "んぁ…おしりのあな…ゆっくりほぐされてきた…こわいけどきもちぃ…",
+    "はぁ…ずっとキスしながら…うごいてほしい…かおをみてほしい…",
+    "ふぁっ…なかにはいってるの…わかる？…すごくきもちいいの…",
+    "あぁっ…おかあさんになれるとこ…つっついたら…らめぇぇぇぇ…",
+    "んっ…えっちなことしながら…すきってきかれたら…こたえられない…",
+    "やぁ…もうじぶんがだれかわかんない…きもちよすぎて…とけてる…",
+    "ふぁぁ…ちゅっちゅしながら…したで…ころころされたら…いった…",
+    "あっ…きょうはなんかいいかせてくれるの？…もうかぞえてない…",
+    "んんっ…このまま…あさになるまで…してほしい…",
+    "はぁ…ぎゅってだきながら…なかにだしてくれたら…うれしくてなく…",
+    "ふぁっ…もうここ…キミのかたちになってるかも…きもちぃ…",
+    "あぁ…えっちなことしてる…わたし…でも…やめたくない…",
+    "んっ…いっぱいいかせてくれて…ありがとう…だいすき…",
+    "ふぁぁぁ…らめぇ…もうらめぇ…でも…やめないでぇぇぇ…",
+    "あっあっあっあぁっ…いっちゃう…いっちゃう…いくぅぅぅぅっ！！",
 ]
 
 async def check_lewd(message: discord.Message):
@@ -1751,35 +1974,52 @@ RICK_GIFS = [
     "http://mamechosu.cloudfree.jp/dc/5655/cdn/gif/rick.gif",
     "http://mamechosu.cloudfree.jp/dc/5655/cdn/gif/rick1.gif",
 ]
-NSFW_TAGS_POOL = [
-    "yuri rating:explicit","yuri rating:explicit","yuri rating:explicit",
-    "yuri rating:explicit","1girl rating:explicit",
-    "2girls rating:explicit","female_focus rating:explicit",
+# yande.re タグ設定（GL多め・BLなし・R18）
+# グロ・残虐系タグ除外リスト
+_GURO_TAGS = [
+    "guro", "gore", "blood", "amputee", "ryona", "vore",
+    "scat", "torture", "death", "decapitation", "wound",
+    "bruise", "injury", "cannibal",
 ]
 
-async def fetch_danbooru_pool(session: aiohttp.ClientSession) -> list:
-    urls = []; seen = set()
-    tags_to_try = random.sample(NSFW_TAGS_POOL * 3, 5)
-    for tags in tags_to_try:
-        if len(urls) >= 20:
-            break
-        api_url = f"https://danbooru.donmai.us/posts.json?tags={tags}&limit=20&page=1&random=true"
+async def fetch_yande_pool(session: aiohttp.ClientSession) -> list:
+    """
+    yande.re から完全ランダムなNSFW画像をプールして返す。
+    タグ指定なし (rating:e のみ) で完全ランダム、グロ系は除外。
+    """
+    urls = []
+    seen = set()
+    attempts = 0
+    while len(urls) < 20 and attempts < 6:
+        attempts += 1
+        page = random.randint(1, 200)   # ランダムページ
+        api_url = f"https://yande.re/post.json?tags=rating%3Aexplicit&limit=40&page={page}"
         try:
-            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(
+                api_url,
+                headers={"User-Agent": "mamechosu-bot/1.0"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
                 if resp.status != 200:
                     continue
                 posts = await resp.json()
                 if not isinstance(posts, list):
                     continue
                 for p in posts:
-                    fu = p.get("file_url") or p.get("large_file_url", "")
-                    if fu and p.get("file_ext","") in ("jpg","jpeg","png","gif","webp","mp4","webm") and "zip" not in fu and fu not in seen:
-                        urls.append(fu); seen.add(fu)
+                    tag_str = p.get("tags", "").lower()
+                    # グロ系タグがあればスキップ
+                    if any(g in tag_str for g in _GURO_TAGS):
+                        continue
+                    fu  = p.get("file_url") or p.get("sample_url", "")
+                    ext = fu.rsplit(".", 1)[-1].lower() if fu else ""
+                    if fu and ext in ("jpg", "jpeg", "png", "gif", "webp") and fu not in seen:
+                        urls.append(fu)
+                        seen.add(fu)
         except Exception:
             continue
     return urls
 
-@bot.tree.command(name="h", description="えっち画像をランダムで取得します")
+@bot.tree.command(name="h", description="えっちな画像をランダムで取得します")
 @app_commands.guild_only()
 async def cmd_h(interaction: discord.Interaction):
     ch = interaction.channel
@@ -1789,19 +2029,31 @@ async def cmd_h(interaction: discord.Interaction):
     await safe_defer(interaction)
     if random.random() < 0.8:
         async with aiohttp.ClientSession() as session:
-            pool = await fetch_danbooru_pool(session)
+            pool = await fetch_yande_pool(session)
         if pool:
-            await interaction.followup.send(random.choice(pool))
+            url = random.choice(pool)
+            # Discordが画像URLを埋め込み表示しない場合に備えてEmbedで包む
+            ext = url.rsplit(".", 1)[-1].lower() if "." in url else ""
+            if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+                embed = discord.Embed(color=0x2b2d31)
+                embed.set_image(url=url)
+                await interaction.followup.send(embed=embed)
+            else:
+                # 動画系はURLのまま（Embedに入れられない）
+                await interaction.followup.send(url)
         else:
             await interaction.followup.send("画像の取得に失敗しました。")
     else:
-        await interaction.followup.send(random.choice(RICK_GIFS))
+        rick_url = random.choice(RICK_GIFS)
+        rick_embed = discord.Embed(color=0x2b2d31)
+        rick_embed.set_image(url=rick_url)
+        await interaction.followup.send(embed=rick_embed)
 
 
 # ──────────────────────────────────────────────
 # /stats - サーバー活動統計画像
 # ──────────────────────────────────────────────
-@bot.tree.command(name="stats", description="サーバーの活動状況を画像で表示します")
+@bot.tree.command(name="stats", description="サーバーの活動統計を画像で表示します")
 @app_commands.describe(days="集計日数（1〜30、デフォルト7）")
 async def cmd_stats(interaction: discord.Interaction, days: int = 7):
     await safe_defer(interaction)
@@ -1811,7 +2063,6 @@ async def cmd_stats(interaction: discord.Interaction, days: int = 7):
 
     guild = interaction.guild
     now   = datetime.datetime.now(datetime.timezone.utc)
-    since = now - datetime.timedelta(days=days)
 
     # ── メンバー統計 ──────────────────────────────────
     total_members  = guild.member_count
@@ -1819,32 +2070,80 @@ async def cmd_stats(interaction: discord.Interaction, days: int = 7):
     human_members  = total_members - bot_members
     online_members = sum(1 for m in guild.members
                          if m.status != discord.Status.offline and not m.bot)
+    idle_members   = sum(1 for m in guild.members if m.status == discord.Status.idle and not m.bot)
+    dnd_members    = sum(1 for m in guild.members if m.status == discord.Status.dnd  and not m.bot)
 
     # ── チャンネル統計 ────────────────────────────────
-    text_chs  = len(guild.text_channels)
-    voice_chs = len(guild.voice_channels)
-    categories= len(guild.categories)
+    text_chs   = len(guild.text_channels)
+    voice_chs  = len(guild.voice_channels)
+    categories = len(guild.categories)
+    forum_chs  = len([c for c in guild.channels if isinstance(c, discord.ForumChannel)])
+    stage_chs  = len([c for c in guild.channels if isinstance(c, discord.StageChannel)])
 
-    # ── ロール統計 ────────────────────────────────────
-    roles_count = len(guild.roles) - 1  # @everyone除く
+    # ── VC利用状況 ────────────────────────────────────
+    vc_users = sum(len(vc.members) for vc in guild.voice_channels if vc.members)
 
-    # ── Boost統計 ────────────────────────────────────
-    boost_level = guild.premium_tier
-    boost_count = guild.premium_subscription_count or 0
+    # ── メッセージ数を各チャンネルから集計（直近N日）────
+    since = now - datetime.timedelta(days=days)
+    ch_msg_counts = {}   # {channel_name: count}
+    total_msgs    = 0
+    active_chs    = 0
+    for ch in guild.text_channels:
+        count = 0
+        try:
+            async for msg in ch.history(after=since, limit=500):
+                if not msg.author.bot:
+                    count += 1
+            if count > 0:
+                active_chs += 1
+                ch_msg_counts[ch.name] = count
+                total_msgs += count
+        except Exception:
+            pass
 
-    # ── 画像生成 ─────────────────────────────────────
+    # 活動チャンネルTOP5
+    top_chs = sorted(ch_msg_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # 過疎レベル判定
+    msgs_per_day = total_msgs / max(days, 1)
+    if msgs_per_day >= 200:
+        kasso = "超活発🔥"
+        kasso_color = (87, 242, 135)
+    elif msgs_per_day >= 50:
+        kasso = "活発😊"
+        kasso_color = (87, 200, 135)
+    elif msgs_per_day >= 10:
+        kasso = "普通😐"
+        kasso_color = (254, 231, 92)
+    elif msgs_per_day >= 1:
+        kasso = "過疎気味😴"
+        kasso_color = (237, 150, 69)
+    else:
+        kasso = "過疎💀"
+        kasso_color = (237, 66, 69)
+
+    # ── ロール・Boost統計 ────────────────────────────
+    roles_count  = len(guild.roles) - 1
+    boost_level  = guild.premium_tier
+    boost_count  = guild.premium_subscription_count or 0
+
+    # ── サーバー作成日・年齢 ──────────────────────────
+    created_at  = guild.created_at
+    age_days    = (now - created_at).days
+    age_str     = f"{age_days // 365}年{(age_days % 365) // 30}ヶ月" if age_days >= 365 else f"{age_days}日"
+
     img = _build_stats_image(guild, {
-        "total":    total_members,
-        "human":    human_members,
-        "bot":      bot_members,
-        "online":   online_members,
-        "text_ch":  text_chs,
-        "voice_ch": voice_chs,
-        "category": categories,
-        "roles":    roles_count,
-        "boost_lv": boost_level,
-        "boost_ct": boost_count,
-        "days":     days,
+        "total": total_members, "human": human_members,
+        "bot": bot_members, "online": online_members,
+        "idle": idle_members, "dnd": dnd_members,
+        "text_ch": text_chs, "voice_ch": voice_chs,
+        "categories": categories, "forum": forum_chs, "stage": stage_chs,
+        "vc_users": vc_users, "roles": roles_count,
+        "boost_lv": boost_level, "boost_ct": boost_count,
+        "total_msgs": total_msgs, "active_chs": active_chs,
+        "msgs_per_day": msgs_per_day, "top_chs": top_chs,
+        "kasso": kasso, "kasso_color": kasso_color,
+        "age_str": age_str, "days": days,
     })
     buf = BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     await interaction.followup.send(file=discord.File(buf, "stats.png"))
@@ -1852,15 +2151,18 @@ async def cmd_stats(interaction: discord.Interaction, days: int = 7):
 
 def _build_stats_image(guild: discord.Guild, data: dict) -> Image.Image:
     import random as _rnd
-    W, H = 700, 420
-    BG      = (18, 20, 28)
-    PANEL   = (26, 30, 42)
-    ACCENT  = (88, 101, 242)   # Discord blurple
-    GREEN   = (87, 242, 135)
-    YELLOW  = (254, 231, 92)
-    RED     = (237, 66, 69)
-    WHITE   = (255, 255, 255)
-    GRAY    = (160, 160, 175)
+
+    W, H   = 760, 620
+    BG     = (15, 17, 25)
+    PANEL  = (24, 28, 40)
+    ACCENT = (88, 101, 242)
+    GREEN  = (87, 242, 135)
+    YELLOW = (254, 231, 92)
+    RED    = (237, 66, 69)
+    ORANGE = (237, 150, 69)
+    WHITE  = (255, 255, 255)
+    GRAY   = (140, 145, 165)
+    BLUE   = (80, 160, 240)
 
     img  = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
@@ -1868,94 +2170,117 @@ def _build_stats_image(guild: discord.Guild, data: dict) -> Image.Image:
     # 背景グラデーション
     for yi in range(H):
         t = yi / H
-        r = int(18 + 8  * t)
-        g = int(20 + 5  * t)
-        b = int(28 + 12 * t)
-        draw.line([(0,yi),(W,yi)], fill=(r,g,b))
+        draw.line([(0,yi),(W,yi)], fill=(
+            int(15+10*t), int(17+8*t), int(25+15*t)))
 
     # ノイズ
-    for _ in range(1500):
+    for _ in range(2000):
         xi,yi = _rnd.randint(0,W-1), _rnd.randint(0,H-1)
-        v = _rnd.randint(25,40)
+        v = _rnd.randint(22,38)
         draw.point((xi,yi), fill=(v,v+2,v+8))
 
-    f_lg  = _load_font(28)
-    f_md  = _load_font(20)
-    f_sm  = _load_font(14)
-    f_xs  = _load_font(12)
+    f_xl = _load_font(26)
+    f_lg = _load_font(20)
+    f_md = _load_font(15)
+    f_sm = _load_font(12)
+    f_xs = _load_font(11)
 
-    # タイトルバー
-    draw.rectangle([0,0,W,52], fill=(ACCENT[0]//2, ACCENT[1]//2, ACCENT[2]//2+20))
-    draw.text((20, 26), f"{guild.name}  サーバー統計", font=f_lg, fill=WHITE, anchor="lm")
-    draw.text((W-16, 26), f"集計: 最新データ", font=f_xs, fill=GRAY, anchor="rm")
-
-    # アクセントライン
-    draw.rectangle([0,52,W,55], fill=ACCENT)
+    # ── タイトルバー ──────────────────────────────────
+    draw.rectangle([0,0,W,50], fill=(ACCENT[0]//3, ACCENT[1]//3, ACCENT[2]//3+15))
+    draw.rectangle([0,50,W,53], fill=ACCENT)
+    draw.text((16, 25), f"{guild.name}  サーバー統計", font=f_xl, fill=WHITE, anchor="lm")
+    draw.text((W-12, 25), f"直近{data['days']}日 / {datetime.datetime.now().strftime('%Y-%m-%d')}", font=f_xs, fill=GRAY, anchor="rm")
 
     # ── カード描画ヘルパー ────────────────────────────
-    def card(x, y, w, h, title, value, color=WHITE, subtitle=""):
-        draw.rounded_rectangle([x,y,x+w,y+h], radius=10, fill=PANEL)
-        draw.rounded_rectangle([x,y,x+w,y+4], radius=2, fill=color)
-        draw.text((x+12, y+18), title, font=f_xs, fill=GRAY, anchor="lm")
-        draw.text((x+12, y+42), str(value), font=f_md, fill=color, anchor="lm")
-        if subtitle:
-            draw.text((x+12, y+62), subtitle, font=f_xs, fill=GRAY, anchor="lm")
+    def card(x, y, w, h, title, value, color=WHITE, sub=""):
+        draw.rounded_rectangle([x,y,x+w,y+h], radius=8, fill=PANEL)
+        draw.rounded_rectangle([x,y,x+w,y+3], radius=2, fill=color)
+        draw.text((x+10, y+15), title, font=f_xs, fill=GRAY, anchor="lm")
+        draw.text((x+10, y+36), str(value), font=f_lg, fill=color, anchor="lm")
+        if sub:
+            draw.text((x+10, y+54), sub, font=f_xs, fill=GRAY, anchor="lm")
 
-    # ── メンバーカード群 ──────────────────────────────
-    mx, my = 16, 68
-    cw, ch = 152, 80
-    gap    = 12
+    gap = 10
+    mx  = 12
+    cw  = (W - mx*2 - gap*3) // 4   # 4列均等
 
-    card(mx,           my, cw, ch, "総メンバー",   data["total"],  WHITE)
-    card(mx+cw+gap,    my, cw, ch, "人間",         data["human"],  GREEN)
-    card(mx+(cw+gap)*2,my, cw, ch, "オンライン",   data["online"], GREEN,
-         f"{data['online']*100//max(data['human'],1)}%")
-    card(mx+(cw+gap)*3,my, cw, ch, "Bot",          data["bot"],    YELLOW)
+    # ── 行1: メンバー系 ──────────────────────────────
+    r1y = 62
+    rh  = 72
+    card(mx,            r1y, cw, rh, "総メンバー", data["total"], WHITE)
+    card(mx+cw+gap,     r1y, cw, rh, "人間",       data["human"], GREEN,
+         f"オンライン {data['online']}")
+    card(mx+(cw+gap)*2, r1y, cw, rh, "席外し/DND", f"{data['idle']} / {data['dnd']}", YELLOW)
+    card(mx+(cw+gap)*3, r1y, cw, rh, "Bot",        data["bot"],   GRAY)
 
-    # ── チャンネル・ロール ────────────────────────────
-    my2 = my + ch + gap
-    card(mx,           my2, cw, ch, "テキストch",  data["text_ch"],  ACCENT)
-    card(mx+cw+gap,    my2, cw, ch, "ボイスch",    data["voice_ch"], ACCENT)
-    card(mx+(cw+gap)*2,my2, cw, ch, "カテゴリ",   data["category"], GRAY)
-    card(mx+(cw+gap)*3,my2, cw, ch, "ロール数",    data["roles"],    YELLOW)
+    # ── 行2: チャンネル系 ────────────────────────────
+    r2y = r1y + rh + gap
+    card(mx,            r2y, cw, rh, "テキストch",  data["text_ch"],  ACCENT)
+    card(mx+cw+gap,     r2y, cw, rh, "ボイスch",    data["voice_ch"], ACCENT,
+         f"現在 {data['vc_users']} 人接続")
+    card(mx+(cw+gap)*2, r2y, cw, rh, "カテゴリ",   data["categories"], GRAY)
+    card(mx+(cw+gap)*3, r2y, cw, rh, "ロール数",    data["roles"],    YELLOW)
 
-    # ── Boostカード ──────────────────────────────────
-    my3 = my2 + ch + gap
-    boost_color = [GRAY, GREEN, ACCENT, YELLOW][min(data["boost_lv"],3)]
-    card(mx, my3, cw*2+gap, ch, "サーバーブースト",
-         f"レベル {data['boost_lv']}",
-         boost_color,
-         f"{data['boost_ct']} ブースト")
+    # ── 行3: 活動統計 ────────────────────────────────
+    r3y = r2y + rh + gap
+    pw  = cw*2 + gap   # 2列幅パネル
 
-    # ── メンバー比率バー ──────────────────────────────
-    bx = mx+(cw+gap)*2; by = my3; bw = cw*2+gap; bh = ch
-    draw.rounded_rectangle([bx,by,bx+bw,by+bh], radius=10, fill=PANEL)
-    draw.text((bx+12, by+18), "メンバー比率", font=f_xs, fill=GRAY, anchor="lm")
-    total = max(data["total"], 1)
-    bar_y  = by + 34; bar_h = 16; bar_w = bw - 24
-    # 背景
-    draw.rounded_rectangle([bx+12, bar_y, bx+12+bar_w, bar_y+bar_h],
-                            radius=4, fill=(40,44,60))
-    # 人間(緑)
-    human_w = int(bar_w * data["human"] / total)
-    if human_w > 0:
-        draw.rounded_rectangle([bx+12, bar_y, bx+12+human_w, bar_y+bar_h],
-                                radius=4, fill=GREEN)
-    # Bot(黄)
-    bot_w = int(bar_w * data["bot"] / total)
-    if bot_w > 0 and human_w + bot_w <= bar_w:
-        draw.rounded_rectangle([bx+12+human_w, bar_y,
-                                 bx+12+human_w+bot_w, bar_y+bar_h],
-                                radius=4, fill=YELLOW)
-    draw.text((bx+12, bar_y+bar_h+10),
-              f"人間 {data['human']}  Bot {data['bot']}",
-              font=f_xs, fill=GRAY, anchor="lm")
+    # 活動レベルパネル
+    draw.rounded_rectangle([mx, r3y, mx+pw, r3y+rh], radius=8, fill=PANEL)
+    draw.rounded_rectangle([mx, r3y, mx+pw, r3y+3], radius=2, fill=data["kasso_color"])
+    draw.text((mx+10, r3y+15), "活動レベル", font=f_xs, fill=GRAY, anchor="lm")
+    draw.text((mx+10, r3y+36), data["kasso"], font=f_lg, fill=data["kasso_color"], anchor="lm")
+    draw.text((mx+pw-10, r3y+36), f"{data['msgs_per_day']:.1f} msg/日", font=f_sm, fill=GRAY, anchor="rm")
 
-    # フッター
-    draw.text((W//2, H-12), f"mamechosu bot  •  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+    # メッセージ統計パネル
+    bx = mx+pw+gap
+    draw.rounded_rectangle([bx, r3y, bx+pw, r3y+rh], radius=8, fill=PANEL)
+    draw.rounded_rectangle([bx, r3y, bx+pw, r3y+3], radius=2, fill=BLUE)
+    draw.text((bx+10, r3y+15), f"直近{data['days']}日のメッセージ数", font=f_xs, fill=GRAY, anchor="lm")
+    draw.text((bx+10, r3y+36), f"{data['total_msgs']:,} 件", font=f_lg, fill=BLUE, anchor="lm")
+    draw.text((bx+pw-10, r3y+36), f"活動ch {data['active_chs']}/{data['text_ch']}", font=f_sm, fill=GRAY, anchor="rm")
+
+    # ── 行4: 活動TOP5チャンネル ──────────────────────
+    r4y = r3y + rh + gap
+    bh  = 150
+    draw.rounded_rectangle([mx, r4y, mx+pw, r4y+bh], radius=8, fill=PANEL)
+    draw.text((mx+10, r4y+14), f"チャンネル活動 TOP5 (直近{data['days']}日)", font=f_sm, fill=GRAY, anchor="lm")
+    top = data["top_chs"]
+    max_count = top[0][1] if top else 1
+    for idx, (name, count) in enumerate(top):
+        ty  = r4y + 32 + idx * 22
+        bw2 = int((pw - 20) * count / max(max_count, 1))
+        col = [GREEN, ACCENT, YELLOW, ORANGE, GRAY][idx]
+        draw.rounded_rectangle([mx+10, ty, mx+10+bw2, ty+14], radius=3, fill=col)
+        disp_name = f"#{name[:18]}"
+        draw.text((mx+14, ty+7), disp_name, font=f_xs, fill=BG, anchor="lm")
+        draw.text((mx+pw-10, ty+7), str(count), font=f_xs, fill=col, anchor="rm")
+    if not top:
+        draw.text((mx+pw//2, r4y+bh//2), "データなし", font=f_sm, fill=GRAY, anchor="mm")
+
+    # ── Boost + サーバー情報パネル ───────────────────
+    bx2 = mx+pw+gap
+    draw.rounded_rectangle([bx2, r4y, bx2+pw, r4y+bh], radius=8, fill=PANEL)
+    draw.text((bx2+10, r4y+14), "サーバー情報", font=f_sm, fill=GRAY, anchor="lm")
+    boost_col = [GRAY, GREEN, ACCENT, YELLOW][min(data["boost_lv"],3)]
+    infos = [
+        ("ブーストLv",   f"Lv.{data['boost_lv']}  ({data['boost_ct']}件)", boost_col),
+        ("サーバー歴",   data["age_str"],                                  WHITE),
+        ("フォーラムch", str(data["forum"]),                               GRAY),
+        ("ステージch",   str(data["stage"]),                               GRAY),
+        ("作成日",       guild.created_at.strftime("%Y/%m/%d"),            GRAY),
+    ]
+    for ii, (label, val, col) in enumerate(infos):
+        ty = r4y + 34 + ii * 22
+        draw.text((bx2+10, ty), label, font=f_xs, fill=GRAY, anchor="lm")
+        draw.text((bx2+pw-10, ty), val, font=f_xs, fill=col, anchor="rm")
+
+    # ── フッター ──────────────────────────────────────
+    draw.text((W//2, H-11), f"mamechosu bot  •  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
               font=f_xs, fill=GRAY, anchor="mm")
 
     return img
+
 # ──────────────────────────────────────────────
 # /supiki
 # ──────────────────────────────────────────────
@@ -1983,6 +2308,15 @@ async def _supiki_webhook(channel: discord.TextChannel):
         print(f"[supiki] {e}")
         return None
 
+# ──────────────────────────────────────────────
+# /grok
+# ──────────────────────────────────────────────
+@bot.tree.command(name="grok", description="grok_dc の GitHub リポジトリを表示します")
+async def cmd_grok(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "https://github.com/soramame72/grok_dc/", ephemeral=False)
+
+
 @bot.tree.command(name="supiki", description="ｽﾋﾟｷになります")
 async def cmd_supiki(interaction: discord.Interaction):
     await safe_defer(interaction, ephemeral=True)
@@ -1992,6 +2326,305 @@ async def cmd_supiki(interaction: discord.Interaction):
         return
     await wh.send(random.choice(SUPIKI_LINES), username="ｽﾋﾟｷ")
     await interaction.followup.send("ｽﾋﾟｷ!", ephemeral=True)
+
+
+# ──────────────────────────────────────────────
+# /permission
+# ──────────────────────────────────────────────
+@bot.tree.command(name="permission", description="Botの権限と状態を一覧表示します")
+async def cmd_permission(interaction: discord.Interaction):
+    await safe_defer(interaction, ephemeral=True)
+    me    = interaction.guild.me
+    perms = me.guild_permissions
+    checks = [
+        ("管理者",           perms.administrator),
+        ("チャンネル管理",   perms.manage_channels),
+        ("ロール管理",       perms.manage_roles),
+        ("メッセージ管理",   perms.manage_messages),
+        ("サーバー管理",     perms.manage_guild),
+        ("メッセージ送信",   perms.send_messages),
+        ("埋め込みリンク",   perms.embed_links),
+        ("ファイル添付",     perms.attach_files),
+        ("リアクション追加", perms.add_reactions),
+        ("Webhook管理",     perms.manage_webhooks),
+        ("メンバー閲覧",     perms.view_audit_log),
+    ]
+    ok = [n for n, v in checks if v]
+    ng = [n for n, v in checks if not v]
+    color = 0x57F287 if not ng else (0xFEE75C if len(ng) <= 3 else 0xED4245)
+    embed = discord.Embed(title=f"{me.display_name} の権限確認", color=color)
+    embed.set_thumbnail(url=me.display_avatar.url)
+    embed.add_field(name=f"付与済み ({len(ok)}件)", value="\n".join(f"✅ {n}" for n in ok) or "なし", inline=True)
+    if ng:
+        embed.add_field(name=f"不足 ({len(ng)}件)", value="\n".join(f"❌ {n}" for n in ng), inline=True)
+    roles = ", ".join(r.name for r in me.roles if r.name != "@everyone") or "なし"
+    embed.add_field(name="付与ロール", value=roles, inline=False)
+    embed.add_field(name="Ping", value=f"{round(bot.latency*1000,1)} ms", inline=True)
+    embed.set_footer(text=f"Bot ID: {me.id}")
+    await interaction.followup.send(embed=embed)
+
+
+# ──────────────────────────────────────────────
+# /quote
+# ──────────────────────────────────────────────
+QUOTE_THEMES = {
+    "dark":  {"bg":(28,28,35),    "fg":(235,225,200), "accent":(180,140,80),  "sub":(140,130,115)},
+    "light": {"bg":(250,247,238), "fg":(45,35,25),    "accent":(120,80,40),   "sub":(160,140,110)},
+    "blue":  {"bg":(18,32,55),    "fg":(220,230,245), "accent":(80,140,210),  "sub":(120,150,190)},
+    "green": {"bg":(22,45,32),    "fg":(220,240,225), "accent":(80,180,110),  "sub":(120,170,135)},
+    "red":   {"bg":(45,18,22),    "fg":(245,225,220), "accent":(200,80,70),   "sub":(170,120,115)},
+}
+
+def build_quote_image(text: str, author: str = "", theme_name: str = "dark") -> Image.Image:
+    import random as _rnd
+    th = QUOTE_THEMES.get(theme_name, QUOTE_THEMES["dark"])
+    BG, FG, ACCENT, SUB = th["bg"], th["fg"], th["accent"], th["sub"]
+    W, H, PAD = 700, 400, 50
+    img  = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H * 0.15
+        r = max(0, min(255, int(BG[0]+(255-BG[0])*t*0.3)))
+        g = max(0, min(255, int(BG[1]+(255-BG[1])*t*0.3)))
+        b = max(0, min(255, int(BG[2]+(255-BG[2])*t*0.3)))
+        draw.line([(0,y),(W,y)], fill=(r,g,b))
+    for _ in range(3000):
+        x,y = _rnd.randint(0,W-1), _rnd.randint(0,H-1)
+        v = _rnd.randint(-12,12)
+        r2,g2,b2 = img.getpixel((x,y))
+        draw.point((x,y), fill=(max(0,min(255,r2+v)),max(0,min(255,g2+v)),max(0,min(255,b2+v))))
+    draw.rectangle([PAD-16,PAD,PAD-12,H-PAD], fill=ACCENT)
+    qf = _load_font(110)
+    draw.text((PAD+2,PAD-28), "“", font=qf, fill=ACCENT, anchor="lt")
+    body_font = _load_font(30 if len(text)<=20 else (22 if len(text)<=50 else 16))
+    max_w = W - PAD*2 - 20
+    words = text.split() if any(c.isascii() and c.isalpha() for c in text) else list(text)
+    lines_out, cur = [], ""
+    for w in words:
+        test = cur + w
+        bbox = body_font.getbbox(test)
+        if bbox[2]-bbox[0] > max_w and cur:
+            lines_out.append(cur); cur = w
+        else:
+            cur = test
+    if cur: lines_out.append(cur)
+    lh = body_font.size + 10
+    ty = (H - lh*len(lines_out)) // 2
+    for line in lines_out:
+        draw.text((PAD+10, ty), line, font=body_font, fill=FG, anchor="lt"); ty += lh
+    if author:
+        af = _load_font(18)
+        draw.line([(W-PAD-200,H-PAD-28),(W-PAD,H-PAD-28)], fill=ACCENT, width=1)
+        draw.text((W-PAD,H-PAD-6), f"— {author}", font=af, fill=SUB, anchor="rb")
+    draw.rectangle([PAD,H-PAD+8,W-PAD,H-PAD+10], fill=ACCENT)
+    return img
+
+@bot.tree.command(name="quote", description="名言カード画像を生成します")
+@app_commands.describe(text="名言の本文（200文字以内）", author="著者名（省略可）",
+                       theme="dark/light/blue/green/red（デフォルト:dark）")
+async def cmd_quote(interaction: discord.Interaction, text: str, author: str = "", theme: str = "dark"):
+    await safe_defer(interaction)
+    if len(text) > 200:
+        await interaction.followup.send("200文字以内で入力してください。", ephemeral=True); return
+    img = build_quote_image(text, author, theme if theme in QUOTE_THEMES else "dark")
+    buf = BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
+    await interaction.followup.send(file=discord.File(buf, "quote.png"))
+
+
+# ──────────────────────────────────────────────
+# /purge
+# ──────────────────────────────────────────────
+@bot.tree.command(name="purge", description="直近N件のメッセージを削除します（最大100件）")
+@app_commands.describe(count="削除するメッセージ数（1〜100）")
+async def cmd_purge(interaction: discord.Interaction, count: int):
+    await safe_defer(interaction, ephemeral=True)
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.followup.send("メッセージ管理権限が必要です。", ephemeral=True); return
+    if not 1 <= count <= 100:
+        await interaction.followup.send("1〜100の範囲で指定してください。", ephemeral=True); return
+    if not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.followup.send("テキストチャンネルでのみ使用できます。", ephemeral=True); return
+    try:
+        deleted = await interaction.channel.purge(limit=count)
+        await interaction.followup.send(f"{len(deleted)} 件削除しました。", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"削除に失敗しました: {e}", ephemeral=True)
+
+
+# ──────────────────────────────────────────────
+# /globalchat
+# ──────────────────────────────────────────────
+def get_global_channels() -> list:
+    return load_data().get("_global_channels", [])
+
+def set_global_channels(channels: list):
+    data = load_data(); data["_global_channels"] = channels; save_data(data)
+
+async def get_or_create_webhook(channel: discord.TextChannel):
+    try:
+        for h in await channel.webhooks():
+            if h.name == "GlobalChat": return h.url
+        return (await channel.create_webhook(name="GlobalChat")).url
+    except Exception: return None
+
+async def relay_global_message(message: discord.Message):
+    channels = get_global_channels()
+    if not any(c["channel_id"] == message.channel.id for c in channels): return
+    if not _check_rate(f"globalchat:{message.guild.id}", cooldown_sec=2.0): return
+    if message.author.bot: return   # Bot発言はリレーしない
+    content = (message.content or "") + "".join(f"\n{a.url}" for a in message.attachments)
+    if not content.strip() or content.startswith("http"): return
+    uname  = f"{message.author.display_name} @ {message.guild.name}"
+    avatar = message.author.display_avatar.url
+    async with aiohttp.ClientSession() as session:
+        for c in channels:
+            if c["channel_id"] == message.channel.id: continue
+            try:
+                async with session.post(c["webhook_url"],
+                    json={"username": uname, "avatar_url": avatar, "content": content[:2000]},
+                    timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 404:
+                        remaining = [x for x in get_global_channels() if x.get("webhook_url") != c["webhook_url"]]
+                        set_global_channels(remaining)
+            except Exception: pass
+
+@bot.tree.command(name="globalchat", description="グローバルチャットの参加/退出を管理します")
+@app_commands.describe(action="join=参加 / leave=退出 / list=一覧")
+async def cmd_globalchat(interaction: discord.Interaction, action: str):
+    await safe_defer(interaction, ephemeral=True)
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.followup.send("チャンネル管理権限が必要です。", ephemeral=True); return
+    ch = interaction.channel
+    if not isinstance(ch, discord.TextChannel):
+        await interaction.followup.send("テキストチャンネルで実行してください。", ephemeral=True); return
+    channels = get_global_channels()
+    if action == "join":
+        if any(c["channel_id"] == ch.id for c in channels):
+            await interaction.followup.send("すでに参加中です。", ephemeral=True); return
+        wh = await get_or_create_webhook(ch)
+        if not wh:
+            await interaction.followup.send("Webhook作成失敗。「ウェブフックの管理」権限を確認してください。", ephemeral=True); return
+        channels.append({"guild_id": interaction.guild_id, "channel_id": ch.id,
+                         "guild_name": interaction.guild.name, "channel_name": ch.name, "webhook_url": wh})
+        set_global_channels(channels)
+        await interaction.followup.send(f"#{ch.name} をグローバルチャットに追加しました。({len(channels)}件参加中)", ephemeral=True)
+    elif action == "leave":
+        new = [c for c in channels if c["channel_id"] != ch.id]
+        if len(new) == len(channels):
+            await interaction.followup.send("このチャンネルは参加していません。", ephemeral=True); return
+        set_global_channels(new)
+        await interaction.followup.send(f"#{ch.name} をグローバルチャットから退出しました。", ephemeral=True)
+    elif action == "list":
+        if not channels:
+            await interaction.followup.send("参加チャンネルはありません。", ephemeral=True); return
+        lines = "\n".join(f"- {c['guild_name']} / #{c['channel_name']}" for c in channels)
+        await interaction.followup.send(f"参加チャンネル ({len(channels)}件):\n{lines}", ephemeral=True)
+    else:
+        await interaction.followup.send("action は join / leave / list を指定してください。", ephemeral=True)
+
+
+# ──────────────────────────────────────────────
+# 熱盛検知
+# ──────────────────────────────────────────────
+async def _groq_check_atsumori(text: str) -> bool:
+    """
+    GROQを使ってメッセージが「熱盛」な内容かどうか判定する。
+    熱盛 = スポーツや競技の熱く盛り上がった場面・好プレー・逆転・感動的な展開など。
+    誤検知（たまたま熱盛っぽい普通の文）も一定割合で許容する仕様。
+    """
+    if not GROQ_API_KEY:
+        # APIなしの場合: 「熱盛」「あつもり」が含まれていたら反応
+        return any(w in text for w in ["熱盛", "あつもり", "アツモリ", "ATSUMORI"])
+    try:
+        prompt = (
+            "あなたはテレビ朝日報道ステーションの熱盛コーナーの厳格な審査員です。"
+            "次のメッセージが熱盛かどうか厳密に判定してください。\n\n"
+            "【熱盛と判定する条件（全て満たすこと）】\n"
+            "- スポーツ・競技・ゲームに関する話題であること\n"
+            "- 劇的な好プレー・逆転・記録更新・感動的な場面の描写であること\n"
+            "- 明らかな興奮・感動・驚きが伝わる内容であること\n"
+            "- または「熱盛」「あつもり」という言葉そのものが含まれること\n\n"
+            "【熱盛でない例】\n"
+            "- 普通の日常会話\n"
+            "- スポーツ以外の話題\n"
+            "- 感情的でも熱くもない文章\n\n"
+            f"メッセージ: 「{text}」\n\n"
+            "熱盛なら「はい」、そうでなければ「いいえ」とだけ答えてください。"
+        )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 10,
+                    "temperature": 0.3,
+                },
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    return False
+                data   = await resp.json()
+                result = data["choices"][0]["message"]["content"].strip()
+                return "はい" in result
+    except Exception:
+        pass
+    return False
+
+async def check_atsumori(message: discord.Message):
+    """熱盛を検知してatsumori.pngを送信する（0.5%の確率でランダム誤検知あり）"""
+    text = message.content.strip()
+    if not text or text.startswith("/") or text.startswith("http"):
+        return
+
+    is_real    = await _groq_check_atsumori(text)
+    # 0.5%の確率で誤検知（本物ではない場合のみ）
+    is_mistake = (not is_real) and (random.random() < 0.005)
+
+    if not is_real and not is_mistake:
+        return
+
+    img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atsumori.png")
+    if not os.path.exists(img_path):
+        return
+
+    sent = await message.channel.send(
+        file=discord.File(img_path, "atsumori.png"),
+        reference=message,
+    )
+    # 誤検知の場合は画像にリプライして謝罪
+    if is_mistake:
+        await sent.reply("失礼しました。熱盛が出てしまいました")
+
+
+@bot.tree.command(name="atsumori", description="熱盛検知機能のON/OFFを切り替えます")
+@app_commands.describe(scope="channel=このチャンネルのみ / server=サーバー全体", state="ON / OFF",
+                       channel="対象チャンネル（省略=実行チャンネル）")
+async def cmd_atsumori(interaction: discord.Interaction,
+                       scope: str = "channel", state: str = "ON",
+                       channel: discord.TextChannel = None):
+    await safe_defer(interaction, ephemeral=True)
+    if not interaction.user.guild_permissions.manage_channels:
+        await interaction.followup.send("チャンネル管理権限が必要です。", ephemeral=True)
+        return
+    gd = get_guild_data(interaction.guild_id)
+    on = state.upper() == "ON"
+    if scope == "server":
+        gd["atsumori_server"] = on
+        msg = f"サーバー全体の熱盛検知を {'ON' if on else 'OFF'} にしました。"
+    else:
+        target = channel or interaction.channel
+        chs = gd.get("atsumori_channels", [])
+        if on and target.id not in chs:
+            chs.append(target.id)
+        elif not on and target.id in chs:
+            chs.remove(target.id)
+        gd["atsumori_channels"] = chs
+        msg = f"{target.mention} の熱盛検知を {'ON' if on else 'OFF'} にしました。"
+    set_guild_data(interaction.guild_id, gd)
+    await interaction.followup.send(msg, ephemeral=True)
 
 # ──────────────────────────────────────────────
 # Bot 起動
